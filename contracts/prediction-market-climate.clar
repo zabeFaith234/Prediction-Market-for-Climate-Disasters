@@ -48,6 +48,15 @@
   uint
 )
 
+(define-map creator-reputation
+  principal
+  {
+    total-predictions: uint,
+    correct-predictions: uint,
+    accuracy-score: uint,
+  }
+)
+
 (define-public (create-prediction
     (title (string-ascii 100))
     (description (string-ascii 500))
@@ -142,6 +151,7 @@
       })
     )
     (var-set total-relief-fund (+ (var-get total-relief-fund) relief-amount))
+    (unwrap-panic (update-creator-reputation (get creator prediction-data) outcome))
     (ok true)
   )
 )
@@ -302,4 +312,51 @@
 
 (define-read-only (get-contract-balance)
   (stx-get-balance (as-contract tx-sender))
+)
+
+(define-private (update-creator-reputation (creator principal) (correct-outcome bool))
+  (let (
+      (current-rep (default-to 
+        { total-predictions: u0, correct-predictions: u0, accuracy-score: u0 }
+        (map-get? creator-reputation creator)
+      ))
+      (new-total (+ (get total-predictions current-rep) u1))
+      (new-correct (if correct-outcome
+        (+ (get correct-predictions current-rep) u1)
+        (get correct-predictions current-rep)
+      ))
+      (new-accuracy (if (> new-total u0)
+        (/ (* new-correct u100) new-total)
+        u0
+      ))
+    )
+    (map-set creator-reputation creator {
+      total-predictions: new-total,
+      correct-predictions: new-correct,
+      accuracy-score: new-accuracy,
+    })
+    (ok true)
+  )
+)
+
+(define-read-only (get-creator-reputation (creator principal))
+  (default-to 
+    { total-predictions: u0, correct-predictions: u0, accuracy-score: u0 }
+    (map-get? creator-reputation creator)
+  )
+)
+
+(define-read-only (get-prediction-with-reputation (prediction-id uint))
+  (match (map-get? predictions prediction-id)
+    prediction-data (let (
+        (creator-rep (get-creator-reputation (get creator prediction-data)))
+      )
+      (ok {
+        prediction: prediction-data,
+        creator-accuracy: (get accuracy-score creator-rep),
+        creator-total-predictions: (get total-predictions creator-rep),
+      })
+    )
+    ERR_PREDICTION_NOT_FOUND
+  )
 )
