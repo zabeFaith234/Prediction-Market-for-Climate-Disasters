@@ -10,8 +10,12 @@
 (define-constant ERR_PREDICTION_ACTIVE (err u106))
 (define-constant ERR_INVALID_AMOUNT (err u107))
 (define-constant ERR_NO_WINNINGS (err u108))
+(define-constant ERR_INVALID_STAGE (err u109))
+(define-constant ERR_TOO_MANY_STAGES (err u110))
+(define-constant MAX_STAGES u5)
 
 (define-data-var next-prediction-id uint u1)
+(define-data-var next-multi-stage-id uint u1)
 (define-data-var total-relief-fund uint u0)
 (define-data-var relief-fund-percentage uint u10)
 
@@ -57,6 +61,34 @@
   }
 )
 
+(define-map multi-stage-predictions
+  uint
+  {
+    creator: principal,
+    title: (string-ascii 100),
+    description: (string-ascii 500),
+    deadline: uint,
+    resolution-block: uint,
+    stage-labels: (list 5 (string-ascii 50)),
+    stage-bets: (list 5 uint),
+    resolved: bool,
+    winning-stage: (optional uint),
+    relief-donation: uint,
+  }
+)
+
+(define-map multi-stage-user-bets
+  {
+    user: principal,
+    prediction-id: uint,
+  }
+  {
+    amount: uint,
+    chosen-stage: uint,
+    claimed: bool,
+  }
+)
+
 (define-public (create-prediction
     (title (string-ascii 100))
     (description (string-ascii 500))
@@ -81,6 +113,37 @@
       relief-donation: u0,
     })
     (var-set next-prediction-id (+ prediction-id u1))
+    (ok prediction-id)
+  )
+)
+
+(define-public (create-multi-stage-prediction
+    (title (string-ascii 100))
+    (description (string-ascii 500))
+    (deadline uint)
+    (stage-labels (list 5 (string-ascii 50)))
+  )
+  (let (
+      (prediction-id (var-get next-multi-stage-id))
+      (current-block stacks-block-height)
+      (stage-count (len stage-labels))
+    )
+    (asserts! (> deadline current-block) ERR_INVALID_PREDICTION)
+    (asserts! (> (len title) u0) ERR_INVALID_PREDICTION)
+    (asserts! (and (>= stage-count u2) (<= stage-count MAX_STAGES)) ERR_TOO_MANY_STAGES)
+    (map-set multi-stage-predictions prediction-id {
+      creator: tx-sender,
+      title: title,
+      description: description,
+      deadline: deadline,
+      resolution-block: u0,
+      stage-labels: stage-labels,
+      stage-bets: (list u0 u0 u0 u0 u0),
+      resolved: false,
+      winning-stage: none,
+      relief-donation: u0,
+    })
+    (var-set next-multi-stage-id (+ prediction-id u1))
     (ok prediction-id)
   )
 )
@@ -127,6 +190,41 @@
   )
 )
 
+(define-public (place-multi-stage-bet
+    (prediction-id uint)
+    (amount uint)
+    (chosen-stage uint)
+  )
+  (let (
+      (prediction-data (unwrap! (map-get? multi-stage-predictions prediction-id) ERR_PREDICTION_NOT_FOUND))
+      (current-block stacks-block-height)
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (stage-count (len (get stage-labels prediction-data)))
+    )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (< current-block (get deadline prediction-data)) ERR_PREDICTION_CLOSED)
+    (asserts! (not (get resolved prediction-data)) ERR_ALREADY_RESOLVED)
+    (asserts! (< chosen-stage stage-count) ERR_INVALID_STAGE)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set user-balances tx-sender (- user-balance amount))
+    (map-set multi-stage-user-bets {
+      user: tx-sender,
+      prediction-id: prediction-id,
+    } {
+      amount: amount,
+      chosen-stage: chosen-stage,
+      claimed: false,
+    })
+    (map-set multi-stage-predictions prediction-id
+      (merge prediction-data {
+        stage-bets: (unwrap-panic (update-stage-bets (get stage-bets prediction-data) chosen-stage amount)),
+      })
+    )
+    (ok true)
+  )
+)
+
 (define-public (resolve-prediction
     (prediction-id uint)
     (outcome bool)
@@ -152,6 +250,34 @@
     )
     (var-set total-relief-fund (+ (var-get total-relief-fund) relief-amount))
     (unwrap-panic (update-creator-reputation (get creator prediction-data) outcome))
+    (ok true)
+  )
+)
+
+(define-public (resolve-multi-stage-prediction
+    (prediction-id uint)
+    (winning-stage uint)
+  )
+  (let (
+      (prediction-data (unwrap! (map-get? multi-stage-predictions prediction-id) ERR_PREDICTION_NOT_FOUND))
+      (current-block stacks-block-height)
+      (stage-count (len (get stage-labels prediction-data)))
+      (total-pool (fold + (get stage-bets prediction-data) u0))
+      (relief-amount (/ (* total-pool (var-get relief-fund-percentage)) u100))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> current-block (get deadline prediction-data)) ERR_PREDICTION_ACTIVE)
+    (asserts! (not (get resolved prediction-data)) ERR_ALREADY_RESOLVED)
+    (asserts! (< winning-stage stage-count) ERR_INVALID_STAGE)
+    (map-set multi-stage-predictions prediction-id
+      (merge prediction-data {
+        resolved: true,
+        winning-stage: (some winning-stage),
+        resolution-block: current-block,
+        relief-donation: relief-amount,
+      })
+    )
+    (var-set total-relief-fund (+ (var-get total-relief-fund) relief-amount))
     (ok true)
   )
 )
@@ -189,6 +315,45 @@
       )
       (asserts! (> user-winnings u0) ERR_NO_WINNINGS)
       (map-set user-bets {
+        user: tx-sender,
+        prediction-id: prediction-id,
+      }
+        (merge user-bet { claimed: true })
+      )
+      (map-set user-balances tx-sender (+ user-balance user-winnings))
+      (ok user-winnings)
+    )
+  )
+)
+
+(define-public (claim-multi-stage-winnings (prediction-id uint))
+  (let (
+      (prediction-data (unwrap! (map-get? multi-stage-predictions prediction-id) ERR_PREDICTION_NOT_FOUND))
+      (user-bet (unwrap!
+        (map-get? multi-stage-user-bets {
+          user: tx-sender,
+          prediction-id: prediction-id,
+        })
+        ERR_NO_WINNINGS
+      ))
+      (winning-stage (unwrap! (get winning-stage prediction-data) ERR_PREDICTION_NOT_FOUND))
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+    )
+    (asserts! (get resolved prediction-data) ERR_PREDICTION_NOT_FOUND)
+    (asserts! (not (get claimed user-bet)) ERR_NO_WINNINGS)
+    (asserts! (is-eq (get chosen-stage user-bet) winning-stage) ERR_NO_WINNINGS)
+    (let (
+        (total-pool (fold + (get stage-bets prediction-data) u0))
+        (winning-pool (default-to u0 (element-at? (get stage-bets prediction-data) winning-stage)))
+        (relief-amount (get relief-donation prediction-data))
+        (distributable-amount (- total-pool relief-amount))
+        (user-winnings (if (> winning-pool u0)
+          (/ (* (get amount user-bet) distributable-amount) winning-pool)
+          u0
+        ))
+      )
+      (asserts! (> user-winnings u0) ERR_NO_WINNINGS)
+      (map-set multi-stage-user-bets {
         user: tx-sender,
         prediction-id: prediction-id,
       }
@@ -339,6 +504,22 @@
   )
 )
 
+(define-private (update-stage-bets (current-bets (list 5 uint)) (stage-index uint) (amount uint))
+  (let ((stage-0 (default-to u0 (element-at? current-bets u0)))
+        (stage-1 (default-to u0 (element-at? current-bets u1)))
+        (stage-2 (default-to u0 (element-at? current-bets u2)))
+        (stage-3 (default-to u0 (element-at? current-bets u3)))
+        (stage-4 (default-to u0 (element-at? current-bets u4))))
+    (ok (list 
+      (if (is-eq stage-index u0) (+ stage-0 amount) stage-0)
+      (if (is-eq stage-index u1) (+ stage-1 amount) stage-1)
+      (if (is-eq stage-index u2) (+ stage-2 amount) stage-2)
+      (if (is-eq stage-index u3) (+ stage-3 amount) stage-3)
+      (if (is-eq stage-index u4) (+ stage-4 amount) stage-4)
+    ))
+  )
+)
+
 (define-read-only (get-creator-reputation (creator principal))
   (default-to 
     { total-predictions: u0, correct-predictions: u0, accuracy-score: u0 }
@@ -359,4 +540,59 @@
     )
     ERR_PREDICTION_NOT_FOUND
   )
+)
+
+(define-read-only (get-multi-stage-prediction (prediction-id uint))
+  (map-get? multi-stage-predictions prediction-id)
+)
+
+(define-read-only (get-multi-stage-user-bet
+    (user principal)
+    (prediction-id uint)
+  )
+  (map-get? multi-stage-user-bets {
+    user: user,
+    prediction-id: prediction-id,
+  })
+)
+
+(define-read-only (get-multi-stage-prediction-stats (prediction-id uint))
+  (match (map-get? multi-stage-predictions prediction-id)
+    prediction-data (ok {
+      total-pool: (fold + (get stage-bets prediction-data) u0),
+      stage-bets: (get stage-bets prediction-data),
+      stage-labels: (get stage-labels prediction-data),
+      resolved: (get resolved prediction-data),
+      winning-stage: (get winning-stage prediction-data),
+      relief-donation: (get relief-donation prediction-data),
+    })
+    ERR_PREDICTION_NOT_FOUND
+  )
+)
+
+(define-read-only (calculate-multi-stage-potential-winnings
+    (prediction-id uint)
+    (amount uint)
+    (chosen-stage uint)
+  )
+  (match (map-get? multi-stage-predictions prediction-id)
+    prediction-data (let (
+        (current-stage-bets (get stage-bets prediction-data))
+        (current-stage-amount (default-to u0 (element-at? current-stage-bets chosen-stage)))
+        (total-pool (fold + current-stage-bets u0))
+        (relief-amount (/ (* (+ total-pool amount) (var-get relief-fund-percentage)) u100))
+        (distributable (- (+ total-pool amount) relief-amount))
+        (winning-pool (+ current-stage-amount amount))
+      )
+      (if (> winning-pool u0)
+        (ok (/ (* amount distributable) winning-pool))
+        (ok u0)
+      )
+    )
+    ERR_PREDICTION_NOT_FOUND
+  )
+)
+
+(define-read-only (get-next-multi-stage-id)
+  (var-get next-multi-stage-id)
 )
