@@ -12,12 +12,17 @@
 (define-constant ERR_NO_WINNINGS (err u108))
 (define-constant ERR_INVALID_STAGE (err u109))
 (define-constant ERR_TOO_MANY_STAGES (err u110))
+(define-constant ERR_INSUFFICIENT_LIQUIDITY (err u111))
+(define-constant ERR_NO_LIQUIDITY_POSITION (err u112))
 (define-constant MAX_STAGES u5)
+(define-constant LIQUIDITY_FEE_PERCENTAGE u2)
 
 (define-data-var next-prediction-id uint u1)
 (define-data-var next-multi-stage-id uint u1)
 (define-data-var total-relief-fund uint u0)
 (define-data-var relief-fund-percentage uint u10)
+(define-data-var total-liquidity-pool uint u0)
+(define-data-var total-liquidity-shares uint u0)
 
 (define-map predictions
   uint
@@ -89,6 +94,15 @@
   }
 )
 
+(define-map liquidity-providers
+  principal
+  {
+    shares: uint,
+    total-provided: uint,
+    fees-earned: uint,
+  }
+)
+
 (define-public (create-prediction
     (title (string-ascii 100))
     (description (string-ascii 500))
@@ -157,6 +171,8 @@
       (prediction-data (unwrap! (map-get? predictions prediction-id) ERR_PREDICTION_NOT_FOUND))
       (current-block stacks-block-height)
       (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (liquidity-fee (/ (* amount LIQUIDITY_FEE_PERCENTAGE) u100))
+      (net-bet-amount (- amount liquidity-fee))
     )
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
@@ -170,22 +186,23 @@
       user: tx-sender,
       prediction-id: prediction-id,
     } {
-      amount: amount,
+      amount: net-bet-amount,
       prediction: prediction,
       claimed: false,
     })
     (map-set predictions prediction-id
       (merge prediction-data {
         total-yes-bets: (if prediction
-          (+ (get total-yes-bets prediction-data) amount)
+          (+ (get total-yes-bets prediction-data) net-bet-amount)
           (get total-yes-bets prediction-data)
         ),
         total-no-bets: (if prediction
           (get total-no-bets prediction-data)
-          (+ (get total-no-bets prediction-data) amount)
+          (+ (get total-no-bets prediction-data) net-bet-amount)
         ),
       })
     )
+    (unwrap-panic (distribute-liquidity-fees liquidity-fee))
     (ok true)
   )
 )
@@ -200,6 +217,8 @@
       (current-block stacks-block-height)
       (user-balance (default-to u0 (map-get? user-balances tx-sender)))
       (stage-count (len (get stage-labels prediction-data)))
+      (liquidity-fee (/ (* amount LIQUIDITY_FEE_PERCENTAGE) u100))
+      (net-bet-amount (- amount liquidity-fee))
     )
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
@@ -212,15 +231,16 @@
       user: tx-sender,
       prediction-id: prediction-id,
     } {
-      amount: amount,
+      amount: net-bet-amount,
       chosen-stage: chosen-stage,
       claimed: false,
     })
     (map-set multi-stage-predictions prediction-id
       (merge prediction-data {
-        stage-bets: (unwrap-panic (update-stage-bets (get stage-bets prediction-data) chosen-stage amount)),
+        stage-bets: (unwrap-panic (update-stage-bets (get stage-bets prediction-data) chosen-stage net-bet-amount)),
       })
     )
+    (unwrap-panic (distribute-liquidity-fees liquidity-fee))
     (ok true)
   )
 )
@@ -402,6 +422,76 @@
     (asserts! (<= new-percentage u50) ERR_INVALID_AMOUNT)
     (var-set relief-fund-percentage new-percentage)
     (ok true)
+  )
+)
+
+(define-public (provide-liquidity (amount uint))
+  (let (
+      (current-pool (var-get total-liquidity-pool))
+      (current-shares (var-get total-liquidity-shares))
+      (provider-data (default-to 
+        { shares: u0, total-provided: u0, fees-earned: u0 }
+        (map-get? liquidity-providers tx-sender)
+      ))
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (new-shares (if (is-eq current-pool u0)
+        amount
+        (/ (* amount current-shares) current-pool)
+      ))
+    )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set user-balances tx-sender (- user-balance amount))
+    (var-set total-liquidity-pool (+ current-pool amount))
+    (var-set total-liquidity-shares (+ current-shares new-shares))
+    (map-set liquidity-providers tx-sender {
+      shares: (+ (get shares provider-data) new-shares),
+      total-provided: (+ (get total-provided provider-data) amount),
+      fees-earned: (get fees-earned provider-data),
+    })
+    (ok new-shares)
+  )
+)
+
+(define-public (withdraw-liquidity (shares uint))
+  (let (
+      (current-pool (var-get total-liquidity-pool))
+      (current-shares (var-get total-liquidity-shares))
+      (provider-data (unwrap! (map-get? liquidity-providers tx-sender) ERR_NO_LIQUIDITY_POSITION))
+      (user-balance (default-to u0 (map-get? user-balances tx-sender)))
+      (withdrawal-amount (if (> current-shares u0)
+        (/ (* shares current-pool) current-shares)
+        u0
+      ))
+    )
+    (asserts! (> shares u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= (get shares provider-data) shares) ERR_INSUFFICIENT_LIQUIDITY)
+    (asserts! (>= current-pool withdrawal-amount) ERR_INSUFFICIENT_LIQUIDITY)
+    (var-set total-liquidity-pool (- current-pool withdrawal-amount))
+    (var-set total-liquidity-shares (- current-shares shares))
+    (map-set liquidity-providers tx-sender {
+      shares: (- (get shares provider-data) shares),
+      total-provided: (get total-provided provider-data),
+      fees-earned: (get fees-earned provider-data),
+    })
+    (map-set user-balances tx-sender (+ user-balance withdrawal-amount))
+    (ok withdrawal-amount)
+  )
+)
+
+(define-private (distribute-liquidity-fees (fee-amount uint))
+  (let (
+      (current-pool (var-get total-liquidity-pool))
+      (current-shares (var-get total-liquidity-shares))
+    )
+    (if (> current-shares u0)
+      (begin
+        (var-set total-liquidity-pool (+ current-pool fee-amount))
+        (ok true)
+      )
+      (ok true)
+    )
   )
 )
 
@@ -595,4 +685,30 @@
 
 (define-read-only (get-next-multi-stage-id)
   (var-get next-multi-stage-id)
+)
+
+(define-read-only (get-liquidity-pool-stats)
+  (ok {
+    total-pool: (var-get total-liquidity-pool),
+    total-shares: (var-get total-liquidity-shares),
+  })
+)
+
+(define-read-only (get-liquidity-provider-info (provider principal))
+  (ok (default-to 
+    { shares: u0, total-provided: u0, fees-earned: u0 }
+    (map-get? liquidity-providers provider)
+  ))
+)
+
+(define-read-only (calculate-liquidity-value (shares uint))
+  (let (
+      (current-pool (var-get total-liquidity-pool))
+      (current-shares (var-get total-liquidity-shares))
+    )
+    (if (> current-shares u0)
+      (ok (/ (* shares current-pool) current-shares))
+      (ok u0)
+    )
+  )
 )
