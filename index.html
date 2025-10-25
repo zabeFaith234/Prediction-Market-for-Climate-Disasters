@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Climate Prediction Market</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>🌪️ Climate Prediction Market</h1>
+            </div>
+            <div class="nav-links">
+                <button id="connectBtn" class="connect-btn">Connect Wallet</button>
+                <div class="balance-display">
+                    <span>Balance: <span id="userBalance">0</span> STX</span>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main class="main-content">
+        <section class="hero">
+            <div class="hero-content">
+                <h2>🌊 Predict Climate Events, Fund Relief Efforts</h2>
+                <p>Make predictions on climate disasters and contribute to relief funds automatically</p>
+                <div class="relief-fund-display">
+                    <h3>💰 Total Relief Fund: <span id="reliefFund">0</span> STX</h3>
+                </div>
+            </div>
+        </section>
+
+        <section class="actions">
+            <div class="action-tabs">
+                <button class="tab-btn active" data-tab="predictions">📊 Active Predictions</button>
+                <button class="tab-btn" data-tab="create">➕ Create Prediction</button>
+                <button class="tab-btn" data-tab="wallet">💳 Wallet</button>
+            </div>
+
+            <div class="tab-content">
+                <div id="predictions" class="tab-panel active">
+                    <div class="predictions-grid" id="predictionsGrid">
+                        <div class="loading">Loading predictions...</div>
+                    </div>
+                </div>
+
+                <div id="create" class="tab-panel">
+                    <form class="create-form" id="createForm">
+                        <h3>Create New Prediction</h3>
+                        <div class="form-group">
+                            <label for="title">🏷️ Title</label>
+                            <input type="text" id="title" maxlength="100" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="description">📝 Description</label>
+                            <textarea id="description" maxlength="500" required></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="deadline">⏰ Deadline (Block Height)</label>
+                            <input type="number" id="deadline" required>
+                        </div>
+                        <button type="submit" class="submit-btn">Create Prediction</button>
+                    </form>
+                </div>
+
+                <div id="wallet" class="tab-panel">
+                    <div class="wallet-actions">
+                        <h3>💳 Wallet Management</h3>
+                        <div class="wallet-section">
+                            <h4>Deposit Funds</h4>
+                            <div class="input-group">
+                                <input type="number" id="depositAmount" placeholder="Amount in STX" min="0" step="0.000001">
+                                <button id="depositBtn" class="action-btn">Deposit</button>
+                            </div>
+                        </div>
+                        <div class="wallet-section">
+                            <h4>Withdraw Funds</h4>
+                            <div class="input-group">
+                                <input type="number" id="withdrawAmount" placeholder="Amount in STX" min="0" step="0.000001">
+                                <button id="withdrawBtn" class="action-btn">Withdraw</button>
+                            </div>
+                        </div>
+                        <div class="wallet-section">
+                            <h4>Your Bets</h4>
+                            <div id="userBets" class="bets-list">
+                                <div class="loading">Loading your bets...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div class="modal" id="betModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Place Your Bet</h3>
+                <span class="close" id="closeModal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="predictionDetails"></div>
+                <div class="bet-form">
+                    <div class="form-group">
+                        <label>Amount (STX)</label>
+                        <input type="number" id="betAmount" min="0" step="0.000001">
+                    </div>
+                    <div class="bet-buttons">
+                        <button id="betYes" class="bet-btn yes">✅ Yes</button>
+                        <button id="betNo" class="bet-btn no">❌ No</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="https://unpkg.com/@stacks/connect@21.0.0/dist/umd/index.js"></script>
+    <script src="https://unpkg.com/@stacks/transactions@6.0.0/dist/umd/index.js"></script>
+    <script src="https://unpkg.com/@stacks/network@6.0.0/dist/umd/index.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
