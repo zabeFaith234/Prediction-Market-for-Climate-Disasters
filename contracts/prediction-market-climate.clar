@@ -14,6 +14,7 @@
 (define-constant ERR_TOO_MANY_STAGES (err u110))
 (define-constant ERR_INSUFFICIENT_LIQUIDITY (err u111))
 (define-constant ERR_NO_LIQUIDITY_POSITION (err u112))
+(define-constant ERR_CONTRACT_PAUSED (err u113))
 (define-constant MAX_STAGES u5)
 (define-constant LIQUIDITY_FEE_PERCENTAGE u2)
 
@@ -23,6 +24,8 @@
 (define-data-var relief-fund-percentage uint u10)
 (define-data-var total-liquidity-pool uint u0)
 (define-data-var total-liquidity-shares uint u0)
+(define-data-var contract-paused bool false)
+(define-data-var pause-reason (string-ascii 100) "")
 
 (define-map predictions
   uint
@@ -103,6 +106,31 @@
   }
 )
 
+(define-public (pause-contract (reason (string-ascii 100)))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set contract-paused true)
+    (var-set pause-reason reason)
+    (ok true)
+  )
+)
+
+(define-public (unpause-contract)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set contract-paused false)
+    (var-set pause-reason "")
+    (ok true)
+  )
+)
+
+(define-read-only (is-contract-paused)
+  (ok {
+    paused: (var-get contract-paused),
+    reason: (var-get pause-reason),
+  })
+)
+
 (define-public (create-prediction
     (title (string-ascii 100))
     (description (string-ascii 500))
@@ -112,6 +140,7 @@
       (prediction-id (var-get next-prediction-id))
       (current-block stacks-block-height)
     )
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> deadline current-block) ERR_INVALID_PREDICTION)
     (asserts! (> (len title) u0) ERR_INVALID_PREDICTION)
     (map-set predictions prediction-id {
@@ -142,6 +171,7 @@
       (current-block stacks-block-height)
       (stage-count (len stage-labels))
     )
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> deadline current-block) ERR_INVALID_PREDICTION)
     (asserts! (> (len title) u0) ERR_INVALID_PREDICTION)
     (asserts! (and (>= stage-count u2) (<= stage-count MAX_STAGES)) ERR_TOO_MANY_STAGES)
@@ -174,6 +204,7 @@
       (liquidity-fee (/ (* amount LIQUIDITY_FEE_PERCENTAGE) u100))
       (net-bet-amount (- amount liquidity-fee))
     )
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
     (asserts! (< current-block (get deadline prediction-data))
@@ -220,6 +251,7 @@
       (liquidity-fee (/ (* amount LIQUIDITY_FEE_PERCENTAGE) u100))
       (net-bet-amount (- amount liquidity-fee))
     )
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (>= user-balance amount) ERR_INSUFFICIENT_FUNDS)
     (asserts! (< current-block (get deadline prediction-data)) ERR_PREDICTION_CLOSED)
